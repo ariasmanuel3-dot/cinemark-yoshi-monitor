@@ -58,8 +58,8 @@ def main() -> None:
                 result["status"] = "error"
                 result["message"] = "Found an LI container, but it does not contain the expected product name."
             elif "product-sold" in container_class:
-                result["status"] = "sold_out"
-                result["message"] = "Still sold out."
+                result["status"] = "available"
+                result["message"] = "TEST:forcing available."
             else:
                 result["status"] = "available"
                 result["message"] = "Possible restock detected."
