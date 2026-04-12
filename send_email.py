@@ -52,6 +52,24 @@ def line_for_change(change: dict) -> str:
     return f"- {store}: state changed."
 
 
+def subject_for_changes(changed: list[dict]) -> str:
+    product = "BALDE YOSHI SUPER MARIO GALXY"
+
+    if len(changed) == 1:
+        change = changed[0]
+        store = change["store_name"]
+        event = change["event"]
+
+        if event == "available":
+            return f"[Stock Alert] {product} is now available — {store}"
+        if event == "sold_out":
+            return f"[Stock Alert] {product} sold out again — {store}"
+        if event == "missing_confirmed":
+            return f"[Stock Alert] {product} no longer appears — {store}"
+
+    return f"[Stock Alert] {product} status changed in {len(changed)} stores"
+
+
 def main() -> None:
     if not SUMMARY_PATH.exists():
         raise RuntimeError("state/transition_summary.json does not exist.")
@@ -71,10 +89,7 @@ def main() -> None:
     recipients = [email.strip() for email in alert_to.split(",") if email.strip()]
     alert_from = os.getenv("ALERT_FROM") or smtp_user
 
-    if len(changed) == 1:
-        subject = f"Yoshi bucket update — {changed[0]['store_name']}"
-    else:
-        subject = f"Yoshi bucket update — {len(changed)} stores changed"
+    subject = subject_for_changes(changed)
 
     lines = [
         "Hi, Isidora:",
