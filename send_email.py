@@ -44,10 +44,10 @@ def main() -> None:
     result = json.loads(result_path.read_text(encoding="utf-8"))
 
     alert_event = os.getenv("ALERT_EVENT", "").strip()
-    previous_status = os.getenv("PREVIOUS_STATUS", "").strip()
-    current_status = os.getenv("CURRENT_STATUS", "").strip()
+    previous_state = os.getenv("PREVIOUS_STATE", "").strip()
+    current_state = os.getenv("CURRENT_STATE", "").strip()
 
-    if alert_event not in {"available", "sold_out"}:
+    if alert_event not in {"available", "sold_out", "missing_confirmed"}:
         print("No email sent because there is no alertable transition.")
         return
 
@@ -63,24 +63,30 @@ def main() -> None:
     url = result.get("url", "")
     container_class = result.get("container_class", "")
     container_text = result.get("container_text", "")
-    message_text = result.get("message", "")
+    monitor_message = result.get("message", "")
 
     if alert_event == "available":
         subject = f"[Stock Alert] {product} is now available"
-        intro = "The monitor detected a transition to AVAILABLE."
-    else:
+        intro = "The monitor detected that the product is now available."
+    elif alert_event == "sold_out":
         subject = f"[Stock Alert] {product} sold out again"
-        intro = "The monitor detected a transition back to SOLD OUT."
+        intro = "The monitor detected that the product sold out again."
+    else:
+        subject = f"[Stock Alert] {product} no longer appears on the page"
+        intro = (
+            "The product no longer appears on the page. "
+            "However, if it becomes available again, you'll be notified."
+        )
 
     body = f"""{intro}
 
 Product: {product}
 URL: {url}
 
-Previous status: {previous_status}
-Current status: {current_status}
+Previous state: {previous_state}
+Current state: {current_state}
 
-Monitor message: {message_text}
+Monitor message: {monitor_message}
 Container class: {container_class}
 
 Visible text captured from the product card:
@@ -96,6 +102,7 @@ Visible text captured from the product card:
     attach_file(message, debug_dir / "container.png")
     attach_file(message, debug_dir / "container_text.txt")
     attach_file(message, debug_dir / "result.json")
+    attach_file(message, pathlib.Path("state/last_state.json"))
 
     context = ssl.create_default_context()
 
@@ -103,7 +110,7 @@ Visible text captured from the product card:
         server.login(smtp_user, smtp_password)
         server.send_message(message, to_addrs=recipients)
 
-    print(f"Alert email sent for transition: {previous_status} -> {current_status}")
+    print(f"Alert email sent for event: {alert_event}")
 
 
 if __name__ == "__main__":

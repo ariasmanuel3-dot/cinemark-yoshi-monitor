@@ -33,8 +33,24 @@ def main() -> None:
             page.goto(URL, wait_until="domcontentloaded", timeout=60000)
             page.wait_for_timeout(8000)
 
+            page.screenshot(path=str(debug_dir / "page.png"), full_page=True)
+
             product = page.get_by_text(PRODUCT, exact=False).first
-            product.wait_for(timeout=10000)
+
+            try:
+                product.wait_for(timeout=10000)
+            except PlaywrightTimeoutError:
+                result["status"] = "missing"
+                result["message"] = "The product name could not be found on the page."
+                browser.close()
+
+                write_text(debug_dir / "status.txt", result["status"])
+                write_text(
+                    debug_dir / "result.json",
+                    json.dumps(result, ensure_ascii=False, indent=2),
+                )
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+                return
 
             container = product.locator("xpath=ancestor::li[1]")
             container.wait_for(timeout=10000)
@@ -48,7 +64,6 @@ def main() -> None:
             write_text(debug_dir / "container_text.txt", container_text)
 
             container.screenshot(path=str(debug_dir / "container.png"))
-            page.screenshot(path=str(debug_dir / "page.png"), full_page=True)
 
             result["product_text"] = product_text
             result["container_class"] = container_class
@@ -58,17 +73,14 @@ def main() -> None:
                 result["status"] = "error"
                 result["message"] = "Found an LI container, but it does not contain the expected product name."
             elif "product-sold" in container_class:
-                result["status"] = "available"
-                result["message"] = "TEST:forcing available."
+                result["status"] = "sold_out"
+                result["message"] = "Still sold out."
             else:
-                result["status"] = "available" 
+                result["status"] = "available"
                 result["message"] = "Possible restock detected."
 
             browser.close()
 
-    except PlaywrightTimeoutError:
-        result["status"] = "error"
-        result["message"] = "Timed out while locating the product or its LI container."
     except Exception as e:
         result["status"] = "error"
         result["message"] = f"Unexpected error: {e}"

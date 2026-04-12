@@ -24,58 +24,119 @@ jobs:
           pip install -r requirements.txt
           playwright install --with-deps chromium
 
-      - name: Read previous status
+      - name: Ensure state file exists
+        shell: bash
+        run: |
+          mkdir -p state
+          if [ ! -f state/last_state.json ]; then
+            cat > state/last_state.json <<'JSON'
+          {
+            "last_seen_state": "unknown",
+            "missing_streak": 0
+          }
+          JSON
+          fi
+
+      - name: Read previous state
         id: previous
         shell: bash
         run: |
-          if [ -f state/last_status.txt ]; then
-            prev="$(tr -d '\r\n' < state/last_status.txt)"
-          else
-            prev="unknown"
-          fi
-          echo "value=$prev" >> "$GITHUB_OUTPUT"
-          echo "Previous status: $prev"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("state/last_state.json")
+          data = json.loads(path.read_text(encoding="utf-8"))
+
+          last_seen_state = data.get("last_seen_state", "unknown")
+          missing_streak = int(data.get("missing_streak", 0))
+
+          with open(Path.cwd() / "prev_outputs.txt", "w", encoding="utf-8") as f:
+              f.write(f"last_seen_state={last_seen_state}\n")
+              f.write(f"missing_streak={missing_streak}\n")
+          PY
+
+          cat prev_outputs.txt >> "$GITHUB_OUTPUT"
+          cat prev_outputs.txt
 
       - name: Run stock monitor
         run: python monitor.py
 
-      - name: Read current status
-        id: current
+      - name: Compute new state and transition
+        id: statecalc
         shell: bash
         run: |
-          curr="$(tr -d '\r\n' < debug/status.txt)"
-          echo "value=$curr" >> "$GITHUB_OUTPUT"
-          echo "Current status: $curr"
+          python - <<'PY'
+          import json
+          from pathlib import Path
 
-      - name: Decide transition
-        id: transition
-        shell: bash
-        run: |
-          prev="${{ steps.previous.outputs.value }}"
-          curr="${{ steps.current.outputs.value }}"
+          prev_seen = "${{ steps.previous.outputs.last_seen_state }}"
+          prev_missing = int("${{ steps.previous.outputs.missing_streak }}")
 
-          send="false"
-          event="none"
+          result = json.loads(Path("debug/result.json").read_text(encoding="utf-8"))
+          raw_status = result.get("status", "error")
 
-          if [ "$curr" = "available" ] && [ "$prev" != "available" ]; then
-            send="true"
-            event="available"
-          elif [ "$curr" = "sold_out" ] && [ "$prev" = "available" ]; then
-            send="true"
-            event="sold_out"
-          fi
+          send = "false"
+          alert_event = "none"
 
-          echo "send=$send" >> "$GITHUB_OUTPUT"
-          echo "event=$event" >> "$GITHUB_OUTPUT"
+          new_seen = prev_seen
+          new_missing = prev_missing
+          current_state = prev_seen
 
-          echo "Transition decision:"
-          echo "  prev=$prev"
-          echo "  curr=$curr"
-          echo "  send=$send"
-          echo "  event=$event"
+          if raw_status == "missing":
+              new_missing = prev_missing + 1
+              if new_missing >= 12:
+                  current_state = "missing_confirmed"
+                  if prev_seen != "missing_confirmed":
+                      send = "true"
+                      alert_event = "missing_confirmed"
+              else:
+                  current_state = "missing_pending"
+          elif raw_status == "available":
+              new_missing = 0
+              current_state = "available"
+              new_seen = "available"
+              if prev_seen != "available":
+                  send = "true"
+                  alert_event = "available"
+          elif raw_status == "sold_out":
+              new_missing = 0
+              current_state = "sold_out"
+              new_seen = "sold_out"
+              if prev_seen == "available":
+                  send = "true"
+                  alert_event = "sold_out"
+          else:
+              current_state = "error"
+
+          if current_state == "missing_confirmed":
+              new_seen = "missing_confirmed"
+
+          state = {
+              "last_seen_state": new_seen,
+              "missing_streak": new_missing
+          }
+
+          Path("state/last_state.json").write_text(
+              json.dumps(state, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8"
+          )
+
+          with open("state_outputs.txt", "w", encoding="utf-8") as f:
+              f.write(f"raw_status={raw_status}\n")
+              f.write(f"previous_state={prev_seen}\n")
+              f.write(f"current_state={current_state}\n")
+              f.write(f"new_seen_state={new_seen}\n")
+              f.write(f"missing_streak={new_missing}\n")
+              f.write(f"send={send}\n")
+              f.write(f"alert_event={alert_event}\n")
+          PY
+
+          cat state_outputs.txt >> "$GITHUB_OUTPUT"
+          cat state_outputs.txt
 
       - name: Send transition email
-        if: steps.transition.outputs.send == 'true'
+        if: steps.statecalc.outputs.send == 'true'
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
@@ -83,30 +144,24 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           ALERT_TO: ${{ secrets.ALERT_TO }}
           ALERT_FROM: ${{ secrets.ALERT_FROM }}
-          ALERT_EVENT: ${{ steps.transition.outputs.event }}
-          PREVIOUS_STATUS: ${{ steps.previous.outputs.value }}
-          CURRENT_STATUS: ${{ steps.current.outputs.value }}
+          ALERT_EVENT: ${{ steps.statecalc.outputs.alert_event }}
+          PREVIOUS_STATE: ${{ steps.statecalc.outputs.previous_state }}
+          CURRENT_STATE: ${{ steps.statecalc.outputs.current_state }}
         run: python send_email.py
 
-      - name: Update stored status
+      - name: Commit updated state
         shell: bash
         run: |
-          mkdir -p state
-          printf "%s\n" "${{ steps.current.outputs.value }}" > state/last_status.txt
-
-      - name: Commit updated status
-        shell: bash
-        run: |
-          if git diff --quiet -- state/last_status.txt; then
-            echo "No status change to commit."
+          if git diff --quiet -- state/last_state.json; then
+            echo "No state change to commit."
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add state/last_status.txt
-          git commit -m "Update last status to ${{ steps.current.outputs.value }}"
+          git add state/last_state.json
+          git commit -m "Update monitor state to ${{ steps.statecalc.outputs.new_seen_state }} (missing_streak=${{ steps.statecalc.outputs.missing_streak }})"
           git push
 
       - name: Upload debug evidence
@@ -116,5 +171,5 @@ jobs:
           name: yoshi-monitor-debug
           path: |
             debug/
-            state/last_status.txt
+            state/last_state.json
           retention-days: 7
