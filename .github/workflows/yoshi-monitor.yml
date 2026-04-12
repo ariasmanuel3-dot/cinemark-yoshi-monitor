@@ -28,6 +28,21 @@ jobs:
       - name: Run stock monitor
         run: python monitor.py
 
+      - name: Read status
+        id: stock
+        run: echo "status=$(cat debug/status.txt)" >> $GITHUB_OUTPUT
+
+      - name: Send email if available
+        if: steps.stock.outputs.status == 'available'
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          ALERT_TO: ${{ secrets.ALERT_TO }}
+          ALERT_FROM: ${{ secrets.ALERT_FROM }}
+        run: python send_email.py
+
       - name: Upload debug evidence
         if: always()
         uses: actions/upload-artifact@v4
