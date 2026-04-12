@@ -3,6 +3,10 @@ name: Yoshi stock monitor
 on:
   workflow_dispatch:
 
+concurrency:
+  group: yoshi-stock-monitor
+  cancel-in-progress: false
+
 jobs:
   check-stock:
     runs-on: ubuntu-latest
@@ -24,119 +28,34 @@ jobs:
           pip install -r requirements.txt
           playwright install --with-deps chromium
 
-      - name: Ensure state file exists
-        shell: bash
-        run: |
-          mkdir -p state
-          if [ ! -f state/last_state.json ]; then
-            cat > state/last_state.json <<'JSON'
-          {
-            "last_seen_state": "unknown",
-            "missing_streak": 0
-          }
-          JSON
-          fi
+      - name: Ensure state directory exists
+        run: mkdir -p state
 
-      - name: Read previous state
-        id: previous
-        shell: bash
-        run: |
-          python - <<'PY'
-          import json
-          from pathlib import Path
-
-          path = Path("state/last_state.json")
-          data = json.loads(path.read_text(encoding="utf-8"))
-
-          last_seen_state = data.get("last_seen_state", "unknown")
-          missing_streak = int(data.get("missing_streak", 0))
-
-          with open(Path.cwd() / "prev_outputs.txt", "w", encoding="utf-8") as f:
-              f.write(f"last_seen_state={last_seen_state}\n")
-              f.write(f"missing_streak={missing_streak}\n")
-          PY
-
-          cat prev_outputs.txt >> "$GITHUB_OUTPUT"
-          cat prev_outputs.txt
-
-      - name: Run stock monitor
+      - name: Run multi-store monitor
         run: python monitor.py
 
-      - name: Compute new state and transition
-        id: statecalc
+      - name: Compute transitions
+        run: python compute_transitions.py
+
+      - name: Decide whether email is needed
+        id: should_email
         shell: bash
         run: |
           python - <<'PY'
           import json
+          import os
           from pathlib import Path
 
-          prev_seen = "${{ steps.previous.outputs.last_seen_state }}"
-          prev_missing = int("${{ steps.previous.outputs.missing_streak }}")
+          summary = json.loads(Path("state/transition_summary.json").read_text(encoding="utf-8"))
+          changed = summary.get("changed_stores", [])
+          value = "true" if changed else "false"
 
-          result = json.loads(Path("debug/result.json").read_text(encoding="utf-8"))
-          raw_status = result.get("status", "error")
-
-          send = "false"
-          alert_event = "none"
-
-          new_seen = prev_seen
-          new_missing = prev_missing
-          current_state = prev_seen
-
-          if raw_status == "missing":
-              new_missing = prev_missing + 1
-              if new_missing >= 12:
-                  current_state = "missing_confirmed"
-                  if prev_seen != "missing_confirmed":
-                      send = "true"
-                      alert_event = "missing_confirmed"
-              else:
-                  current_state = "missing_pending"
-          elif raw_status == "available":
-              new_missing = 0
-              current_state = "available"
-              new_seen = "available"
-              if prev_seen != "available":
-                  send = "true"
-                  alert_event = "available"
-          elif raw_status == "sold_out":
-              new_missing = 0
-              current_state = "sold_out"
-              new_seen = "sold_out"
-              if prev_seen == "available":
-                  send = "true"
-                  alert_event = "sold_out"
-          else:
-              current_state = "error"
-
-          if current_state == "missing_confirmed":
-              new_seen = "missing_confirmed"
-
-          state = {
-              "last_seen_state": new_seen,
-              "missing_streak": new_missing
-          }
-
-          Path("state/last_state.json").write_text(
-              json.dumps(state, ensure_ascii=False, indent=2) + "\n",
-              encoding="utf-8"
-          )
-
-          with open("state_outputs.txt", "w", encoding="utf-8") as f:
-              f.write(f"raw_status={raw_status}\n")
-              f.write(f"previous_state={prev_seen}\n")
-              f.write(f"current_state={current_state}\n")
-              f.write(f"new_seen_state={new_seen}\n")
-              f.write(f"missing_streak={new_missing}\n")
-              f.write(f"send={send}\n")
-              f.write(f"alert_event={alert_event}\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"send={value}\n")
           PY
 
-          cat state_outputs.txt >> "$GITHUB_OUTPUT"
-          cat state_outputs.txt
-
-      - name: Send transition email
-        if: steps.statecalc.outputs.send == 'true'
+      - name: Send email summary
+        if: steps.should_email.outputs.send == 'true'
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
@@ -144,9 +63,6 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           ALERT_TO: ${{ secrets.ALERT_TO }}
           ALERT_FROM: ${{ secrets.ALERT_FROM }}
-          ALERT_EVENT: ${{ steps.statecalc.outputs.alert_event }}
-          PREVIOUS_STATE: ${{ steps.statecalc.outputs.previous_state }}
-          CURRENT_STATE: ${{ steps.statecalc.outputs.current_state }}
         run: python send_email.py
 
       - name: Commit updated state
@@ -161,7 +77,8 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add state/last_state.json
-          git commit -m "Update monitor state to ${{ steps.statecalc.outputs.new_seen_state }} (missing_streak=${{ steps.statecalc.outputs.missing_streak }})"
+          git commit -m "Update multi-store monitor state"
+          git pull --rebase origin main
           git push
 
       - name: Upload debug evidence
@@ -171,5 +88,5 @@ jobs:
           name: yoshi-monitor-debug
           path: |
             debug/
-            state/last_state.json
+            state/
           retention-days: 7

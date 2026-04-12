@@ -7,6 +7,8 @@ import ssl
 import sys
 from email.message import EmailMessage
 
+SUMMARY_PATH = pathlib.Path("state/transition_summary.json")
+
 
 def require_env(name: str) -> str:
     value = os.getenv(name)
@@ -34,21 +36,31 @@ def attach_file(message: EmailMessage, path: pathlib.Path) -> None:
         )
 
 
+def line_for_change(change: dict) -> str:
+    store = change["store_name"]
+    event = change["event"]
+
+    if event == "available":
+        return f"- {store}: now available."
+    if event == "sold_out":
+        return f"- {store}: sold out again."
+    if event == "missing_confirmed":
+        return (
+            f"- {store}: The product no longer appears on the page. "
+            "However, if it becomes available again, you'll be notified."
+        )
+    return f"- {store}: state changed."
+
+
 def main() -> None:
-    debug_dir = pathlib.Path("debug")
-    result_path = debug_dir / "result.json"
+    if not SUMMARY_PATH.exists():
+        raise RuntimeError("state/transition_summary.json does not exist.")
 
-    if not result_path.exists():
-        raise RuntimeError("debug/result.json does not exist.")
+    summary = json.loads(SUMMARY_PATH.read_text(encoding="utf-8"))
+    changed = summary.get("changed_stores", [])
 
-    result = json.loads(result_path.read_text(encoding="utf-8"))
-
-    alert_event = os.getenv("ALERT_EVENT", "").strip()
-    previous_state = os.getenv("PREVIOUS_STATE", "").strip()
-    current_state = os.getenv("CURRENT_STATE", "").strip()
-
-    if alert_event not in {"available", "sold_out", "missing_confirmed"}:
-        print("No email sent because there is no alertable transition.")
+    if not changed:
+        print("No email sent because no stores changed.")
         return
 
     smtp_host = require_env("SMTP_HOST")
@@ -59,39 +71,26 @@ def main() -> None:
     recipients = [email.strip() for email in alert_to.split(",") if email.strip()]
     alert_from = os.getenv("ALERT_FROM") or smtp_user
 
-    product = result.get("product", "Product")
-    url = result.get("url", "")
-    container_class = result.get("container_class", "")
-    container_text = result.get("container_text", "")
-    monitor_message = result.get("message", "")
-
-    if alert_event == "available":
-        subject = f"[Stock Alert] {product} is now available"
-        intro = "The monitor detected that the product is now available."
-    elif alert_event == "sold_out":
-        subject = f"[Stock Alert] {product} sold out again"
-        intro = "The monitor detected that the product sold out again."
+    if len(changed) == 1:
+        subject = f"Yoshi bucket update — {changed[0]['store_name']}"
     else:
-        subject = f"[Stock Alert] {product} no longer appears on the page"
-        intro = (
-            "The product no longer appears on the page. "
-            "However, if it becomes available again, you'll be notified."
-        )
+        subject = f"Yoshi bucket update — {len(changed)} stores changed"
 
-    body = f"""{intro}
+    lines = [
+        "Hi, Isidora:",
+        "",
+        "I checked the three Cinemark store pages and these were the changes:",
+        "",
+    ]
 
-Product: {product}
-URL: {url}
+    for change in changed:
+        lines.append(line_for_change(change))
+        lines.append(f"  URL: {change['url']}")
+        lines.append("")
 
-Previous state: {previous_state}
-Current state: {current_state}
+    lines.append("I attached the relevant screenshots for quick verification.")
 
-Monitor message: {monitor_message}
-Container class: {container_class}
-
-Visible text captured from the product card:
-{container_text}
-"""
+    body = "\n".join(lines)
 
     message = EmailMessage()
     message["Subject"] = subject
@@ -99,10 +98,16 @@ Visible text captured from the product card:
     message["To"] = ", ".join(recipients)
     message.set_content(body)
 
-    attach_file(message, debug_dir / "container.png")
-    attach_file(message, debug_dir / "container_text.txt")
-    attach_file(message, debug_dir / "result.json")
+    attach_file(message, SUMMARY_PATH)
+    attach_file(message, pathlib.Path("debug/results.json"))
     attach_file(message, pathlib.Path("state/last_state.json"))
+
+    for change in changed:
+        store_id = change["store_id"]
+        attach_file(message, pathlib.Path(f"debug/{store_id}_page.png"))
+        attach_file(message, pathlib.Path(f"debug/{store_id}_container.png"))
+        attach_file(message, pathlib.Path(f"debug/{store_id}_container_text.txt"))
+        attach_file(message, pathlib.Path(f"debug/{store_id}_container_class.txt"))
 
     context = ssl.create_default_context()
 
@@ -110,7 +115,7 @@ Visible text captured from the product card:
         server.login(smtp_user, smtp_password)
         server.send_message(message, to_addrs=recipients)
 
-    print(f"Alert email sent for event: {alert_event}")
+    print(f"Alert email sent for {len(changed)} changed store(s).")
 
 
 if __name__ == "__main__":
