@@ -43,7 +43,10 @@ def line_for_change(change: dict) -> str:
     if event == "available":
         return f"- {store}: now available."
     if event == "sold_out":
-        return f"- {store}: sold out again."
+        return (
+            f"- {store}: The product sold out again. "
+            "However, if it becomes available, you'll be notified."
+        )
     if event == "missing_confirmed":
         return (
             f"- {store}: The product no longer appears on the page. "
