@@ -43,8 +43,12 @@ def main() -> None:
 
     result = json.loads(result_path.read_text(encoding="utf-8"))
 
-    if result.get("status") != "available":
-        print("No email sent because the product is not marked available.")
+    alert_event = os.getenv("ALERT_EVENT", "").strip()
+    previous_status = os.getenv("PREVIOUS_STATUS", "").strip()
+    current_status = os.getenv("CURRENT_STATUS", "").strip()
+
+    if alert_event not in {"available", "sold_out"}:
+        print("No email sent because there is no alertable transition.")
         return
 
     smtp_host = require_env("SMTP_HOST")
@@ -52,26 +56,41 @@ def main() -> None:
     smtp_user = require_env("SMTP_USER")
     smtp_password = require_env("SMTP_PASSWORD")
     alert_to = require_env("ALERT_TO")
+    recipients = [email.strip() for email in alert_to.split(",") if email.strip()]
     alert_from = os.getenv("ALERT_FROM") or smtp_user
 
-    subject = f"[Stock Alert] {result.get('product', 'Product')} may be available"
+    product = result.get("product", "Product")
+    url = result.get("url", "")
+    container_class = result.get("container_class", "")
+    container_text = result.get("container_text", "")
+    message_text = result.get("message", "")
 
-    body = f"""The monitor thinks the product may be available.
+    if alert_event == "available":
+        subject = f"[Stock Alert] {product} is now available"
+        intro = "The monitor detected a transition to AVAILABLE."
+    else:
+        subject = f"[Stock Alert] {product} sold out again"
+        intro = "The monitor detected a transition back to SOLD OUT."
 
-Product: {result.get("product", "")}
-URL: {result.get("url", "")}
-Status: {result.get("status", "")}
-Message: {result.get("message", "")}
-Container class: {result.get("container_class", "")}
+    body = f"""{intro}
+
+Product: {product}
+URL: {url}
+
+Previous status: {previous_status}
+Current status: {current_status}
+
+Monitor message: {message_text}
+Container class: {container_class}
 
 Visible text captured from the product card:
-{result.get("container_text", "")}
+{container_text}
 """
 
     message = EmailMessage()
     message["Subject"] = subject
     message["From"] = alert_from
-    message["To"] = alert_to
+    message["To"] = ", ".join(recipients)
     message.set_content(body)
 
     attach_file(message, debug_dir / "container.png")
@@ -82,9 +101,9 @@ Visible text captured from the product card:
 
     with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context) as server:
         server.login(smtp_user, smtp_password)
-        server.send_message(message)
+        server.send_message(message, to_addrs=recipients)
 
-    print("Alert email sent.")
+    print(f"Alert email sent for transition: {previous_status} -> {current_status}")
 
 
 if __name__ == "__main__":

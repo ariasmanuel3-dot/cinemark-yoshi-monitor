@@ -6,6 +6,8 @@ on:
 jobs:
   check-stock:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Check out repository
@@ -22,15 +24,58 @@ jobs:
           pip install -r requirements.txt
           playwright install --with-deps chromium
 
+      - name: Read previous status
+        id: previous
+        shell: bash
+        run: |
+          if [ -f state/last_status.txt ]; then
+            prev="$(tr -d '\r\n' < state/last_status.txt)"
+          else
+            prev="unknown"
+          fi
+          echo "value=$prev" >> "$GITHUB_OUTPUT"
+          echo "Previous status: $prev"
+
       - name: Run stock monitor
         run: python monitor.py
 
-      - name: Read status
-        id: stock
-        run: echo "status=$(cat debug/status.txt)" >> $GITHUB_OUTPUT
+      - name: Read current status
+        id: current
+        shell: bash
+        run: |
+          curr="$(tr -d '\r\n' < debug/status.txt)"
+          echo "value=$curr" >> "$GITHUB_OUTPUT"
+          echo "Current status: $curr"
 
-      - name: Send email if available
-        if: steps.stock.outputs.status == 'available'
+      - name: Decide transition
+        id: transition
+        shell: bash
+        run: |
+          prev="${{ steps.previous.outputs.value }}"
+          curr="${{ steps.current.outputs.value }}"
+
+          send="false"
+          event="none"
+
+          if [ "$curr" = "available" ] && [ "$prev" != "available" ]; then
+            send="true"
+            event="available"
+          elif [ "$curr" = "sold_out" ] && [ "$prev" = "available" ]; then
+            send="true"
+            event="sold_out"
+          fi
+
+          echo "send=$send" >> "$GITHUB_OUTPUT"
+          echo "event=$event" >> "$GITHUB_OUTPUT"
+
+          echo "Transition decision:"
+          echo "  prev=$prev"
+          echo "  curr=$curr"
+          echo "  send=$send"
+          echo "  event=$event"
+
+      - name: Send transition email
+        if: steps.transition.outputs.send == 'true'
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
@@ -38,12 +83,38 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           ALERT_TO: ${{ secrets.ALERT_TO }}
           ALERT_FROM: ${{ secrets.ALERT_FROM }}
+          ALERT_EVENT: ${{ steps.transition.outputs.event }}
+          PREVIOUS_STATUS: ${{ steps.previous.outputs.value }}
+          CURRENT_STATUS: ${{ steps.current.outputs.value }}
         run: python send_email.py
+
+      - name: Update stored status
+        shell: bash
+        run: |
+          mkdir -p state
+          printf "%s\n" "${{ steps.current.outputs.value }}" > state/last_status.txt
+
+      - name: Commit updated status
+        shell: bash
+        run: |
+          if git diff --quiet -- state/last_status.txt; then
+            echo "No status change to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add state/last_status.txt
+          git commit -m "Update last status to ${{ steps.current.outputs.value }}"
+          git push
 
       - name: Upload debug evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: yoshi-monitor-debug
-          path: debug/
+          path: |
+            debug/
+            state/last_status.txt
           retention-days: 7
