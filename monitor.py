@@ -61,7 +61,7 @@ def main() -> None:
                 result["status"] = "available"
                 result["message"] = "TEST:forcing available."
             else:
-                result["status"] = "available"
+                result["status"] = "available" 
                 result["message"] = "Possible restock detected."
 
             browser.close()
