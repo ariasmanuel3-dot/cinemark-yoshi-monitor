@@ -10,6 +10,7 @@ concurrency:
 jobs:
   check-stock:
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     permissions:
       contents: write
 
