@@ -4,19 +4,19 @@
       "name": "Mall Mirador",
       "url": "https://www.cinemark.cl/confiteria?tag=2302&cine=cinemark_mallplaza_mirador_bio_bio",
       "last_seen_state": "missing_confirmed",
-      "missing_streak": 5749
+      "missing_streak": 5750
     },
     "mall_plaza_trebol": {
       "name": "Mall Plaza Trébol",
       "url": "https://www.cinemark.cl/confiteria?tag=548&cine=cinemark_mallplaza_trebol",
       "last_seen_state": "missing_confirmed",
-      "missing_streak": 6384
+      "missing_streak": 6385
     },
     "cinemark_coronel": {
       "name": "Cinemark Coronel",
       "url": "https://www.cinemark.cl/confiteria?tag=2306&cine=cinemark_arauco_coronel",
       "last_seen_state": "missing_confirmed",
-      "missing_streak": 5599
+      "missing_streak": 5600
     }
   }
 }
